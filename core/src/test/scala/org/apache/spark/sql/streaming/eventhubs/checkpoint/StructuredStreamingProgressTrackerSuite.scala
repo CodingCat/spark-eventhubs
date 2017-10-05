@@ -37,28 +37,26 @@ class StructuredStreamingProgressTrackerSuite extends SharedSQLContext {
   }
 
   test("progress directory is created properly when it exists") {
-    fileSystem.mkdirs(PathTools.makeTempDirectoryPath(progressRootPath.toString, appName))
-
+    fileSystem.mkdirs(new Path(PathTools.progressTempDirPathStr(progressRootPath.toString,
+      appName)))
     progressTracker = StructuredStreamingProgressTracker
       .initInstance(eventhubsSource1.uid, progressRootPath.toString, appName, new Configuration())
-
     assert(fileSystem.exists(progressTracker.progressDirectoryPath))
   }
 
   test("temp progress is not cleaned up when partial temp progress exists") {
-    val tempPath = PathTools.makeTempDirectoryPath(progressRootPath.toString, appName)
 
+    val tempPath = new Path(PathTools.progressTempDirPathStr(progressRootPath.toString, appName))
     fileSystem.mkdirs(tempPath)
 
     val streamId = EventHubsSource.streamIdGenerator.get()
-    var tempFilePath = PathTools.makeTempFilePath(tempPath.toString,
-      streamId, eventhubsSource1.uid, eventhubsNamedPartitions("ns1").head, unixTimestamp)
 
+    var tempFilePath = new Path(PathTools.progressTempFileStr(tempPath.toString,
+      streamId, eventhubsSource1.uid, eventhubsNamedPartitions("ns1").head, unixTimestamp))
     fileSystem.create(tempFilePath)
 
-    tempFilePath = PathTools.makeTempFilePath(tempPath.toString, streamId,
-      eventhubsSource1.uid, eventhubsNamedPartitions("ns1").tail.head, unixTimestamp)
-
+    tempFilePath = new Path(PathTools.progressTempFileStr(tempPath.toString,
+      streamId, eventhubsSource1.uid, eventhubsNamedPartitions("ns1").tail.head, unixTimestamp))
     fileSystem.create(tempFilePath)
 
     val filesBefore = fileSystem.listStatus(tempPath)
@@ -69,9 +67,11 @@ class StructuredStreamingProgressTrackerSuite extends SharedSQLContext {
 
     val filesAfter = fileSystem.listStatus(tempPath)
     assert(filesAfter.size === 2)
+
   }
 
   test("incomplete progress will not be discarded") {
+
     // Register two eventhubs connectors to structured streaming progress tracker
 
     StructuredStreamingProgressTracker.registeredConnectors +=
@@ -97,7 +97,7 @@ class StructuredStreamingProgressTrackerSuite extends SharedSQLContext {
 
     // Progress records of all partitions of eventhubsSource2 are not updated
 
-    val eventHubsSourceStreamId2 = EventHubsSource.streamIdGenerator.get()
+    val eventHubsSourceStreamId2 = EventHubsSource.streamIdGenerator.get();
 
     progressWriter = new ProgressWriter(eventHubsSourceStreamId2,
       eventhubsSource2.uid, eventhubsSource2.connectedInstances.head, unixTimestamp,
@@ -116,26 +116,31 @@ class StructuredStreamingProgressTrackerSuite extends SharedSQLContext {
     StructuredStreamingProgressTracker.initInstance(eventhubsSource2.uid,
       progressRootPath.toString, appName, new Configuration())
 
-    var progressTempPath = PathTools.makeTempDirectoryStr(progressRootPath.toString,
+    var progressTempPath = PathTools.progressTempDirPathStr(progressRootPath.toString,
       appName, eventhubsSource1.uid)
 
-    assert(fileSystem.exists(PathTools.makeTempFilePath(progressTempPath, eventHubsSourceStreamId1,
-      eventhubsSource1.uid, eventhubsSource1.connectedInstances.head, unixTimestamp)))
+    assert(fileSystem.exists(new Path(PathTools.progressTempFileStr(progressTempPath,
+      eventHubsSourceStreamId1, eventhubsSource1.uid, eventhubsSource1.connectedInstances.head,
+      unixTimestamp))))
+    assert(fileSystem.exists(new Path(PathTools.progressTempFileStr(progressTempPath,
+      eventHubsSourceStreamId1, eventhubsSource1.uid, eventhubsSource1.connectedInstances(1),
+      unixTimestamp))))
 
-    assert(fileSystem.exists(PathTools.makeTempFilePath(progressTempPath, eventHubsSourceStreamId1,
-      eventhubsSource1.uid, eventhubsSource1.connectedInstances(1), unixTimestamp)))
+    progressTempPath = PathTools.progressTempDirPathStr(progressRootPath.toString,
+      appName, eventhubsSource2.uid)
 
-    progressTempPath = PathTools.makeTempDirectoryStr(
-      progressRootPath.toString, appName, eventhubsSource2.uid)
+    assert(fileSystem.exists(new Path(PathTools.progressTempFileStr(progressTempPath,
+      eventHubsSourceStreamId2, eventhubsSource2.uid, eventhubsSource2.connectedInstances.head,
+      unixTimestamp))))
 
-    assert(fileSystem.exists(PathTools.makeTempFilePath(progressTempPath, eventHubsSourceStreamId2,
-      eventhubsSource2.uid, eventhubsSource2.connectedInstances.head, unixTimestamp)))
+    assert(fileSystem.exists(new Path(PathTools.progressTempFileStr(progressTempPath,
+      eventHubsSourceStreamId2, eventhubsSource2.uid, eventhubsSource2.connectedInstances(1),
+      unixTimestamp))))
 
-    assert(fileSystem.exists(PathTools.makeTempFilePath(progressTempPath, eventHubsSourceStreamId2,
-      eventhubsSource2.uid, eventhubsSource2.connectedInstances(1), unixTimestamp)))
+    assert(!fileSystem.exists(new Path(PathTools.progressTempFileStr(progressTempPath,
+      eventHubsSourceStreamId2, eventhubsSource2.uid, eventhubsSource2.connectedInstances(2),
+      unixTimestamp))))
 
-    assert(!fileSystem.exists(PathTools.makeTempFilePath(progressTempPath, eventHubsSourceStreamId2,
-      eventhubsSource2.uid, eventhubsSource2.connectedInstances(2), unixTimestamp)))
   }
 
   test("start from the beginning of the streams when the latest progress file does not exist") {
@@ -167,6 +172,7 @@ class StructuredStreamingProgressTrackerSuite extends SharedSQLContext {
   }
 
   test("progress tracker can read back last progress correctly") {
+
     // Register two eventhubs connectors to structured streaming progress tracker
 
     StructuredStreamingProgressTracker.registeredConnectors +=
@@ -190,7 +196,7 @@ class StructuredStreamingProgressTrackerSuite extends SharedSQLContext {
 
     // Progress records of all partitions of eventhubsSource2 are updated
 
-    val eventHubsSourceStreamId2 = EventHubsSource.streamIdGenerator.get()
+    val eventHubsSourceStreamId2 = EventHubsSource.streamIdGenerator.get();
 
     progressWriter = new ProgressWriter(eventHubsSourceStreamId2,
       eventhubsSource2.uid, eventhubsSource2.connectedInstances.head, unixTimestamp,
@@ -232,6 +238,7 @@ class StructuredStreamingProgressTrackerSuite extends SharedSQLContext {
   }
 
   test("inconsistent timestamp in the progress tracks can be detected") {
+
     // Register two eventhubs connectors to structured streaming progress tracker
 
     StructuredStreamingProgressTracker.registeredConnectors +=
@@ -255,7 +262,7 @@ class StructuredStreamingProgressTrackerSuite extends SharedSQLContext {
 
     // Progress records of all partitions of eventhubsSource2 are not updated
 
-    val eventHubsSourceStreamId2 = EventHubsSource.streamIdGenerator.get()
+    val eventHubsSourceStreamId2 = EventHubsSource.streamIdGenerator.get();
 
     progressWriter = new ProgressWriter(eventHubsSourceStreamId2,
       eventhubsSource2.uid, eventhubsSource2.connectedInstances.head, unixTimestamp,
@@ -287,6 +294,7 @@ class StructuredStreamingProgressTrackerSuite extends SharedSQLContext {
   }
 
   test("latest offsets can be committed correctly and temp directory is not cleaned") {
+
     // Register two eventhubs connectors to structured streaming progress tracker
 
     StructuredStreamingProgressTracker.registeredConnectors +=
@@ -310,7 +318,7 @@ class StructuredStreamingProgressTrackerSuite extends SharedSQLContext {
 
     // Progress records of all partitions of eventhubsSource2 are not updated
 
-    val eventHubsSourceStreamId2 = EventHubsSource.streamIdGenerator.get()
+    val eventHubsSourceStreamId2 = EventHubsSource.streamIdGenerator.get();
 
     progressWriter = new ProgressWriter(eventHubsSourceStreamId2,
       eventhubsSource2.uid, eventhubsSource2.connectedInstances.head, unixTimestamp,
@@ -338,29 +346,32 @@ class StructuredStreamingProgressTrackerSuite extends SharedSQLContext {
     progressTracker2.commit(progressTracker2.collectProgressRecordsForBatch(
       unixTimestamp, List(eventhubsSource2)), unixTimestamp)
 
-    var progressTempPath = PathTools.makeTempDirectoryStr(
-      progressRootPath.toString, appName, eventhubsSource1.uid)
+    var progressTempPath = PathTools.progressTempDirPathStr(progressRootPath.toString,
+      appName, eventhubsSource1.uid)
 
-    assert(fileSystem.exists(PathTools.makeTempFilePath(progressTempPath, eventHubsSourceStreamId1,
-      eventhubsSource1.uid, eventhubsSource1.connectedInstances.head, unixTimestamp)))
+    assert(fileSystem.exists(new Path(PathTools.progressTempFileStr(progressTempPath,
+      eventHubsSourceStreamId1, eventhubsSource1.uid, eventhubsSource1.connectedInstances.head,
+      unixTimestamp))))
+    assert(fileSystem.exists(new Path(PathTools.progressTempFileStr(progressTempPath,
+      eventHubsSourceStreamId1, eventhubsSource1.uid, eventhubsSource1.connectedInstances(1),
+      unixTimestamp))))
 
-    assert(fileSystem.exists(PathTools.makeTempFilePath(progressTempPath, eventHubsSourceStreamId1,
-      eventhubsSource1.uid, eventhubsSource1.connectedInstances(1), unixTimestamp)))
+    progressTempPath = PathTools.progressTempDirPathStr(progressRootPath.toString,
+      appName, eventhubsSource2.uid)
 
-    progressTempPath = PathTools.makeTempDirectoryStr(
-      progressRootPath.toString, appName, eventhubsSource2.uid)
-
-    assert(fileSystem.exists(PathTools.makeTempFilePath(progressTempPath, eventHubsSourceStreamId2,
-      eventhubsSource2.uid, eventhubsSource2.connectedInstances.head, unixTimestamp)))
-
-    assert(fileSystem.exists(PathTools.makeTempFilePath(progressTempPath, eventHubsSourceStreamId2,
-      eventhubsSource2.uid, eventhubsSource2.connectedInstances(1), unixTimestamp)))
-
-    assert(fileSystem.exists(PathTools.makeTempFilePath(progressTempPath, eventHubsSourceStreamId2,
-      eventhubsSource2.uid, eventhubsSource2.connectedInstances(2), unixTimestamp)))
+    assert(fileSystem.exists(new Path(PathTools.progressTempFileStr(progressTempPath,
+      eventHubsSourceStreamId2, eventhubsSource2.uid, eventhubsSource2.connectedInstances.head,
+      unixTimestamp))))
+    assert(fileSystem.exists(new Path(PathTools.progressTempFileStr(progressTempPath,
+      eventHubsSourceStreamId2, eventhubsSource2.uid, eventhubsSource2.connectedInstances(1),
+      unixTimestamp))))
+    assert(fileSystem.exists(new Path(PathTools.progressTempFileStr(progressTempPath,
+      eventHubsSourceStreamId2, eventhubsSource2.uid, eventhubsSource2.connectedInstances(2),
+      unixTimestamp))))
   }
 
   test("locate progress file correctly based on timestamp") {
+
     // Register one eventhubs connector to structured streaming progress tracker
 
     StructuredStreamingProgressTracker.registeredConnectors +=

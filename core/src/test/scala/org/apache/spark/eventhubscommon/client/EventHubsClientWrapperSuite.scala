@@ -31,7 +31,7 @@ import org.apache.spark.streaming.eventhubs.checkpoint.OffsetStore
 class EventHubsClientWrapperSuite extends FunSuite with BeforeAndAfter with MockitoSugar {
   var ehClientWrapperMock: EventHubsClientWrapper = _
   var offsetStoreMock: OffsetStore = _
-  val ehParams: Map[String, String] = Map(
+  val ehParams = Map[String, String] (
     "eventhubs.policyname" -> "policyname",
     "eventhubs.policykey" -> "policykey",
     "eventhubs.namespace" -> "namespace",

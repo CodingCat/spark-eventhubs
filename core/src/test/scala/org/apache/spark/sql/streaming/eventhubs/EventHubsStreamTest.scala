@@ -30,7 +30,6 @@ import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.fs.{FileSystem, Path}
 import org.scalatest.{Assertions, BeforeAndAfter}
 import org.scalatest.concurrent.{Eventually, Timeouts}
-import org.scalatest.concurrent.Eventually._
 import org.scalatest.concurrent.PatienceConfiguration.Timeout
 import org.scalatest.exceptions.TestFailedDueToTimeoutException
 import org.scalatest.time.Span
@@ -93,8 +92,20 @@ trait EventHubsStreamTest extends QueryTest with BeforeAndAfter
   }
 
   /** How long to wait for an active stream to catch up when checking a result. */
-  val streamingTimeout = 60 seconds
+  val streamingTimeout = 60.seconds
 
+
+  protected def configureSimulatedReceiverAndClient(
+      eventHubs: SimulatedEventHubs): Unit = {
+    EventHubsSource.setEventHubsReceiverCreator(
+      (eventHubsParams: Map[String, String], partitionId: Int, startOffset: Long,
+       eventHubsOffsetType: EventHubsOffsetType, _: Int) =>
+        new TestEventHubsReceiver(eventHubsParams, eventHubs, partitionId, startOffset,
+          eventHubsOffsetType))
+    EventHubsSource.setEventHubsAMQPCreator(
+      (_: String, _: Map[String, Map[String, String]]) =>
+        new SimulatedEventHubsRestClient(eventHubs))
+  }
 
   /** A trait for actions that can be performed while testing a streaming DataFrame. */
   // trait StreamAction
@@ -131,8 +142,7 @@ trait EventHubsStreamTest extends QueryTest with BeforeAndAfter
         isSorted = false)
     }
 
-    def apply(rows: Row*): CheckAnswerRows =
-      CheckAnswerRows(rows, lastOnly = false, isSorted = false)
+    def apply(rows: Row*): CheckAnswerRows = CheckAnswerRows(rows, false, false)
 
     def apply[A : Encoder](partial: Boolean, lastOnly: Boolean, rows: A*): CheckAnswerRows = {
       val encoder = encoderFor[A]
@@ -280,7 +290,7 @@ trait EventHubsStreamTest extends QueryTest with BeforeAndAfter
       }
     }
 
-    def isStreamWaitingAt(time: Long): Boolean = synchronized {waitStartTime contains time}
+    def isStreamWaitingAt(time: Long): Boolean = synchronized {waitStartTime == Some(time)}
   }
 
 
@@ -301,7 +311,7 @@ trait EventHubsStreamTest extends QueryTest with BeforeAndAfter
     var lastStream: StreamExecution = null
     val awaiting = new mutable.HashMap[Int, Offset]() // source index -> offset to wait for
     val partialAwaiting = new mutable.HashMap[Int, Offset]()
-    var sink = new MemorySink(stream.schema, outputMode)
+    var sink = new CustomizedMemorySink(stream.schema, outputMode)
     val resetConfValues = mutable.Map[String, Option[String]]()
 
     @volatile
@@ -414,11 +424,13 @@ trait EventHubsStreamTest extends QueryTest with BeforeAndAfter
         timestamp: Long,
         brokenType: String): Unit = {
       val progressDir = progressTracker.progressDirectoryPath.toString
-      val metadataDir = progressTracker.metadataDirectoryPath.toString
+      val metadataDir = progressTracker.progressMetadataDirectoryPath.toString
       val progressFilePath = new Path(s"$progressDir/progress-$timestamp")
       val metadataFilePath = new Path(s"$metadataDir/$timestamp")
       val fs = progressFilePath.getFileSystem(new Configuration())
       if (brokenType == "delete") {
+        println(s"${progressFilePath.toString}:${fs.exists(progressFilePath)} " +
+          s"${metadataFilePath.toString}:${fs.exists(metadataFilePath)}")
         fs.delete(progressFilePath, true)
         fs.delete(metadataFilePath, true)
       } else if (brokenType == "deletemetadata") {
@@ -450,7 +462,6 @@ trait EventHubsStreamTest extends QueryTest with BeforeAndAfter
             if (triggerClock.isInstanceOf[StreamManualClock]) {
               manualClockExpectedTime = triggerClock.asInstanceOf[StreamManualClock].getTimeMillis()
             }
-
             additionalConfs.foreach(pair => {
               val value =
                 if (sparkSession.conf.contains(pair._1)) {
@@ -461,53 +472,25 @@ trait EventHubsStreamTest extends QueryTest with BeforeAndAfter
             })
 
             lastStream = currentStream
-            val createQueryMethod = sparkSession.streams.getClass.getDeclaredMethods.filter(m =>
-              m.getName == "createQuery").head
-            createQueryMethod.setAccessible(true)
-            val checkpointLocation = additionalConfs.getOrElse[String](
-              "eventhubs.test.checkpointLocation",
-              metadataRoot)
-            if (additionalConfs.contains("eventhubs.test.newSink") &&
-              additionalConfs("eventhubs.test.newSink").toBoolean) {
-              sink = new MemorySink(stream.schema, outputMode)
+            val eventHubs = EventHubsTestUtilities.getOrCreateSimulatedEventHubs(null)
+            configureSimulatedReceiverAndClient(eventHubs)
+            if (additionalConfs.getOrElse("eventhubs.test.newSink", "false").toBoolean) {
+              sink = new CustomizedMemorySink(stream.schema, outputMode)
             }
-            currentStream = createQueryMethod.invoke(
-              sparkSession.streams,
-              None,
-              Some(checkpointLocation),
-              stream,
-              sink,
-              outputMode,
-              Boolean.box(false), // useTempCheckpointLocation
-              Boolean.box(true), // recoverFromCheckpointLocation
-              trigger,
-              triggerClock).asInstanceOf[StreamExecution]
-
+            currentStream = sparkSession.streams.startQuery(None, Some(metadataRoot), stream,
+              sink, outputMode, trigger = trigger, triggerClock = triggerClock).
+              asInstanceOf[StreamingQueryWrapper].streamingQuery
             triggerClock match {
               case smc: StreamManualClock =>
                 smc.setStream(currentStream)
               case _ =>
             }
-
-            val activeQueriesField = sparkSession.streams.getClass.getDeclaredFields.filter(f =>
-              f.getName == "org$apache$spark$sql$streaming$StreamingQueryManager$$activeQueries").
-              head
-            activeQueriesField.setAccessible(true)
-            val activeQueries = activeQueriesField.get(sparkSession.streams).
-              asInstanceOf[mutable.HashMap[UUID, StreamingQuery]]
-            activeQueries += currentStream.id -> currentStream
-
-            val eventHubsSource = searchCurrentSource()
-            val eventHubs = EventHubsTestUtilities.getOrSimulateEventHubs(null)
-            eventHubsSource.setEventHubClient(new SimulatedEventHubsRestClient(eventHubs))
-            eventHubsSource.setEventHubsReceiver(
-              (eventHubsParameters: Map[String, String], partitionId: Int,
-               startOffset: Long, offsetType: EventHubsOffsetType, _: Int) =>
-                new TestEventHubsReceiver(eventHubsParameters, eventHubs, partitionId, startOffset,
-                  offsetType)
-            )
-            currentStream.start()
-
+            try {
+              currentStream.awaitInitialization(streamingTimeout.toMillis)
+            } catch {
+              case _: StreamingQueryException =>
+                // swallow it intentionally
+            }
           case AdvanceManualClock(timeToAdd) =>
             verify(currentStream != null,
               "can not advance manual clock when a stream is not running")
@@ -610,22 +593,23 @@ trait EventHubsStreamTest extends QueryTest with BeforeAndAfter
             }.head
             val sourceIndex = findSourceIndex(currentStream.logicalPlan, sources)
             partialAwaiting.put(sourceIndex.get, expectedOffset)
-          case a: EventHubsAddData =>
+          case addDataToEH: AddDataToEventHubs[_, _] =>
             try {
               // Add data and get the source where it was added, and the expected offset of the
               // added data.
               val queryToUse = Option(currentStream).orElse(Option(lastStream))
-              val (source, offset) = a.addData(queryToUse)
+              val (source, offset) = addDataToEH.addData(queryToUse)
               // Try to find the index of the source to which data was added. Either get the index
               // from the current active query or the original input logical plan.
-              val sourceIndex =
-              queryToUse.flatMap { query =>
-                findSourceIndex(query.logicalPlan, source)
-              }.orElse {
-                findSourceIndex(stream.logicalPlan, source)
-              }.getOrElse {
-                throw new IllegalArgumentException(
-                  "Could find index of the source to which data was added")
+              val sourceIndex = {
+                queryToUse.flatMap { query =>
+                  findSourceIndex(query.logicalPlan, source)
+                }.orElse {
+                  findSourceIndex(stream.logicalPlan, source)
+                }.getOrElse {
+                  throw new IllegalArgumentException(
+                    "Could find index of the source to which data was added")
+                }
               }
               // Store the expected offset of added data to wait for it later
               awaiting.put(sourceIndex, offset)

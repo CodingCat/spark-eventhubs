@@ -18,24 +18,26 @@
 package org.apache.spark.sql.streaming.eventhubs.checkpoint
 
 import scala.collection.mutable
+import scala.collection.mutable.ListBuffer
 
 import org.apache.hadoop.conf.Configuration
+import org.apache.hadoop.fs.Path
 
 import org.apache.spark.eventhubscommon.{EventHubNameAndPartition, EventHubsConnector}
 import org.apache.spark.eventhubscommon.progress.{PathTools, ProgressTrackerBase}
 
-private[spark] class StructuredStreamingProgressTracker private[spark](
+class StructuredStreamingProgressTracker(
     uid: String,
     progressDir: String,
     appName: String,
     hadoopConfiguration: Configuration)
   extends ProgressTrackerBase(progressDir, appName, hadoopConfiguration) {
 
-  private[spark] override lazy val progressDirectoryStr = PathTools.makeProgressDirectoryStr(
+  protected override lazy val progressDirStr: String = PathTools.progressDirPathStr(
     progressDir, appName, uid)
-  private[spark] override lazy val tempDirectoryStr = PathTools.makeTempDirectoryStr(progressDir,
-    appName, uid)
-  private[spark] override lazy val metadataDirectoryStr = PathTools.makeMetadataDirectoryStr(
+  protected override lazy val progressTempDirStr: String = PathTools.progressTempDirPathStr(
+    progressDir, appName, uid)
+  protected override lazy val progressMetadataDirStr: String = PathTools.progressMetadataDirPathStr(
     progressDir, appName, uid)
 
   override def eventHubNameAndPartitions: Map[String, List[EventHubNameAndPartition]] = {
@@ -45,10 +47,10 @@ private[spark] class StructuredStreamingProgressTracker private[spark](
 
   private def initMetadataDirectory(): Unit = {
     try {
-      val fs = metadataDirectoryPath.getFileSystem(hadoopConfiguration)
-      val checkpointMetadaDirExisted = fs.exists(tempDirectoryPath)
+      val fs = progressMetadataDirPath.getFileSystem(hadoopConfiguration)
+      val checkpointMetadaDirExisted = fs.exists(progressTempDirPath)
       if (!checkpointMetadaDirExisted) {
-        fs.mkdirs(metadataDirectoryPath)
+        fs.mkdirs(progressMetadataDirPath)
       }
     } catch {
       case ex: Exception =>
@@ -58,22 +60,20 @@ private[spark] class StructuredStreamingProgressTracker private[spark](
   }
 
   private def initProgressFileDirectory(): Unit = {
-    val fs = progressDirectoryPath.getFileSystem(hadoopConfiguration)
+    val fs = progressDirPath.getFileSystem(hadoopConfiguration)
     try {
-      val progressDirExist = fs.exists(progressDirectoryPath)
+      val progressDirExist = fs.exists(progressDirPath)
       if (progressDirExist) {
         val (validationPass, latestFile) = validateProgressFile(fs)
-        if (!validationPass) {
-          if (latestFile.isDefined) {
+        if (!validationPass && latestFile.isDefined) {
             logWarning(s"latest progress file ${latestFile.get} corrupt, rebuild file...")
             val latestFileTimestamp = fromPathToTimestamp(latestFile.get)
             val progressRecords = collectProgressRecordsForBatch(latestFileTimestamp,
               List(StructuredStreamingProgressTracker.registeredConnectors(uid)))
             commit(progressRecords, latestFileTimestamp)
-          }
         }
       } else {
-        fs.mkdirs(progressDirectoryPath)
+        fs.mkdirs(progressDirPath)
       }
     } catch {
       case ex: Exception =>

@@ -18,11 +18,13 @@
 package org.apache.spark.eventhubscommon.utils
 
 import java.time.Instant
-import java.util.Date
+import java.util.{Calendar, Date}
+
+import scala.reflect.ClassTag
 
 import com.microsoft.azure.eventhubs.EventData
 import com.microsoft.azure.eventhubs.EventData.SystemProperties
-import com.microsoft.azure.eventhubs.amqp.AmqpConstants
+import com.microsoft.azure.servicebus.amqp.AmqpConstants
 import org.powermock.reflect.Whitebox
 
 import org.apache.spark.eventhubscommon.EventHubNameAndPartition
@@ -30,7 +32,7 @@ import org.apache.spark.internal.Logging
 
 private[spark] object EventHubsTestUtilities extends Logging {
 
-  def simulateEventHubs[T, U](
+  def createSimulatedEventHubs[T, U](
      eventHubsParameters: Map[String, String],
      eventPayloadsAndProperties: Seq[(T, Seq[U])] = Seq.empty[(T, Seq[U])]): SimulatedEventHubs = {
 
@@ -50,11 +52,11 @@ private[spark] object EventHubsTestUtilities extends Logging {
     simulatedEventHubs
   }
 
-  def getOrSimulateEventHubs[T, U](
+  def getOrCreateSimulatedEventHubs[T, U](
       eventHubsParameters: Map[String, String],
       eventPayloadsAndProperties: Seq[(T, Seq[U])] = Seq.empty[(T, Seq[U])]): SimulatedEventHubs = {
     if (simulatedEventHubs == null) {
-      simulatedEventHubs = simulateEventHubs(eventHubsParameters, eventPayloadsAndProperties)
+      simulatedEventHubs = createSimulatedEventHubs(eventHubsParameters, eventPayloadsAndProperties)
     }
     simulatedEventHubs
   }

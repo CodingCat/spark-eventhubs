@@ -25,7 +25,7 @@ import org.apache.spark.streaming.{StreamingContext, TestSuiteBase}
 class EventhubsImplicitsSuite
   extends TestSuiteBase with org.scalatest.Matchers with MockitoSugar {
 
-  val ehParams = Map(
+  val ehParams = Map[String, String] (
     "eventhubs.policyname" -> "policyname",
     "eventhubs.policykey" -> "policykey",
     "eventhubs.namespace" -> "namespace",

@@ -35,11 +35,7 @@ import org.apache.spark.sql.types._
 
 private[spark] class EventHubsSource(
     sqlContext: SQLContext,
-    eventHubsParams: Map[String, String],
-    eventhubReceiverCreator: (Map[String, String], Int, Long, EventHubsOffsetType, Int) =>
-      EventHubsClientWrapper = EventHubsClientWrapper.getEventHubReceiver,
-    eventhubClientCreator: (String, Map[String, Map[String, String]]) =>
-      EventHubClient = AMQPEventHubsClient.getInstance)
+    eventHubsParams: Map[String, String])
   extends Source with EventHubsConnector with Logging {
 
   case class EventHubsOffset(batchId: Long, offsets: Map[EventHubNameAndPartition, (Long, Long)])
@@ -55,22 +51,22 @@ private[spark] class EventHubsSource(
 
   private var _eventHubsClient: EventHubClient = _
 
-  private var _eventHubsReceiver: (Map[String, String], Int, Long, EventHubsOffsetType, Int)
+  private var _eventHubsReceiverCreator: (Map[String, String], Int, Long, EventHubsOffsetType, Int)
     => EventHubsClientWrapper = _
 
   private[eventhubs] def eventHubClient = {
     if (_eventHubsClient == null) {
-      _eventHubsClient = eventhubClientCreator(eventHubsNamespace,
+      _eventHubsClient = EventHubsSource.eventhubClientCreator(eventHubsNamespace,
         Map(eventHubsName -> eventHubsParams))
     }
     _eventHubsClient
   }
 
   private[eventhubs] def eventHubsReceiver = {
-    if (_eventHubsReceiver == null) {
-      _eventHubsReceiver = eventhubReceiverCreator
+    if (_eventHubsReceiverCreator == null) {
+      _eventHubsReceiverCreator = EventHubsSource.eventhubReceiverCreator
     }
-    _eventHubsReceiver
+    _eventHubsReceiverCreator
   }
 
   private val ehNameAndPartitions = {
@@ -90,18 +86,6 @@ private[spark] class EventHubsSource(
   private val progressTracker = StructuredStreamingProgressTracker.initInstance(
     uid, eventHubsParams("eventhubs.progressTrackingDir"), sqlContext.sparkContext.appName,
     sqlContext.sparkContext.hadoopConfiguration)
-
-  private[spark] def setEventHubClient(eventHubClient: EventHubClient): EventHubsSource = {
-    _eventHubsClient = eventHubClient
-    this
-  }
-
-  private[spark] def setEventHubsReceiver(
-      eventhubReceiverCreator: (Map[String, String], Int, Long, EventHubsOffsetType, Int) =>
-        EventHubsClientWrapper): EventHubsSource = {
-    _eventHubsReceiver = eventhubReceiverCreator
-    this
-  }
 
   // the flag to avoid committing in the first batch
   private[spark] var firstBatch = true
@@ -221,7 +205,7 @@ private[spark] class EventHubsSource(
   private def composeOffsetRange(endOffset: EventHubsBatchRecord): List[OffsetRange] = {
     val filterOffsetAndType = {
       if (committedOffsetsAndSeqNums.batchId == -1) {
-        val startSeqs = eventHubClient.startSeqOfPartition(retryIfFail = false, connectedInstances)
+        val startSeqs = eventHubClient.startSeqOfPartition(false, connectedInstances)
         require(startSeqs.isDefined, s"cannot fetch start seqs for eventhubs $eventHubsName")
         committedOffsetsAndSeqNums = EventHubsOffset(-1, committedOffsetsAndSeqNums.offsets.map {
           case (ehNameAndPartition, (offset, _)) =>
@@ -263,6 +247,7 @@ private[spark] class EventHubsSource(
     import scala.collection.JavaConverters._
     val (containsProperties, userDefinedKeys) =
       EventHubsSourceProvider.ifContainsPropertiesAndUserDefinedKeys(eventHubsParams)
+    println(s"building an rdd :${eventHubsRDD.offsetRanges}")
     val rowRDD = eventHubsRDD.map(eventData =>
       Row.fromSeq(Seq(eventData.getBytes, eventData.getSystemProperties.getOffset.toLong,
         eventData.getSystemProperties.getSequenceNumber,
@@ -317,7 +302,10 @@ private[spark] class EventHubsSource(
         }.get
       }
     }
+    println(s"recover from a failure with ${this.uid}")
+    println(s"recovering info $start $end $recoveredCommittedBatchId")
     val latestProgress = readProgress(recoveredCommittedBatchId)
+    println(s"read latest progress file $latestProgress")
     if (latestProgress.offsets.isEmpty && start.isDefined) {
       // we shall not commit when start is empty, otherwise, we will have a duplicate processing
       // of the first batch
@@ -362,4 +350,22 @@ private[spark] class EventHubsSource(
 
 private object EventHubsSource {
   val streamIdGenerator = new AtomicInteger(0)
+
+  private var eventhubReceiverCreator: (Map[String, String], Int, Long, EventHubsOffsetType, Int) =>
+    EventHubsClientWrapper = EventHubsClientWrapper.getEventHubReceiver
+  private var eventhubClientCreator: (String, Map[String, Map[String, String]]) =>
+    EventHubClient = AMQPEventHubsClient.getInstance
+
+  // for test
+  private[eventhubs] def setEventHubsReceiverCreator(
+      newEventhubReceiverCreator: (Map[String, String], Int, Long, EventHubsOffsetType, Int) =>
+        EventHubsClientWrapper) = this.synchronized {
+      eventhubReceiverCreator = newEventhubReceiverCreator
+  }
+
+  private[eventhubs] def setEventHubsAMQPCreator(
+      newEventhubClientCreator: (String, Map[String, Map[String, String]]) => EventHubClient)
+    = this.synchronized {
+    eventhubClientCreator = newEventhubClientCreator
+  }
 }

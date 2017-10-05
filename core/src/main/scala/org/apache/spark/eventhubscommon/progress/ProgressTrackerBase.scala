@@ -33,30 +33,38 @@ import org.apache.spark.internal.Logging
 private[spark] abstract class ProgressTrackerBase[T <: EventHubsConnector](
     progressDir: String, appName: String, hadoopConfiguration: Configuration) extends Logging {
 
-  private[spark] lazy val progressDirectoryStr = PathTools.makeProgressDirectoryStr(progressDir,
+  protected lazy val progressDirStr: String = PathTools.progressDirPathStr(progressDir, appName)
+  protected lazy val progressTempDirStr: String = PathTools.progressTempDirPathStr(progressDir,
     appName)
-  private[spark] lazy val tempDirectoryStr = PathTools.makeTempDirectoryStr(progressDir, appName)
-  private[spark] lazy val metadataDirectoryStr = PathTools.makeMetadataDirectoryStr(progressDir,
-    appName)
+  protected lazy val progressMetadataDirStr: String = PathTools.progressMetadataDirPathStr(
+    progressDir, appName)
 
-  private[spark] lazy val progressDirectoryPath = new Path(progressDirectoryStr)
-  private[spark] lazy val tempDirectoryPath = new Path(tempDirectoryStr)
-  private[spark] lazy val metadataDirectoryPath = new Path(metadataDirectoryStr)
+  protected lazy val progressDirPath = new Path(progressDirStr)
+  protected lazy val progressTempDirPath = new Path(progressTempDirStr)
+  protected lazy val progressMetadataDirPath = new Path(progressMetadataDirStr)
 
   def eventHubNameAndPartitions: Map[String, List[EventHubNameAndPartition]]
 
-  // Metadata is maintained for fast ProgressTracker initialization and can cleaned independently
-  // from Spark checkpoint files. We'll clean metadata here to ensure it's cleaned whether or not
-  // Spark checkpointing is enabled.
+  private[spark] def progressDirectoryPath = progressDirPath
+  private[spark] def progressTempDirectoryPath = progressTempDirPath
+  private[spark] def progressMetadataDirectoryPath = progressMetadataDirPath
+
+  // metadata cleaning is different with progress file and temporary file clean up in that, metadata
+  // is developed for fast initialization of progress tracker and it should (can) be independent
+  // with Spark Streaming checkpoint (the others have to be coordinated with Spark Streaming
+  // checkpoint cleanup to ensure that we have enough support for recovery). By cleaning metadata
+  // in progress tracker, we can ensure that the ProgressTracker can still be quickly initialized
+  // even the user does not enable Spark Streaming checkpoint or the cleanup of checkpoint is
+  // lagging behind
   private val threadPoolForMetadataClean = new ScheduledThreadPoolExecutor(1)
   protected val metadataCleanupFuture: ScheduledFuture[_] = scheduleMetadataCleanTask()
 
   // getModificationTime is not reliable for unit test and some extreme case in distributed
   // file system so that we have to derive timestamp from the file names. The timestamp can be the
   // logical one like batch 1, 2, 3 and can also be the real timestamp
-  private[spark] def fromPathToTimestamp(path: Path): Long =
+  private[spark] def fromPathToTimestamp(path: Path): Long = {
     path.getName.split("-").last.toLong
-
+  }
 
   protected def allEventNameAndPartitionExist(
       candidateEhNameAndPartitions: Map[String, List[EventHubNameAndPartition]]): Boolean = {
@@ -67,10 +75,10 @@ private[spark] abstract class ProgressTrackerBase[T <: EventHubsConnector](
     }
   }
 
-  // no metadata (for backward compatibility)
+  // no metadata (for backward compatiblity
   private def getLatestFileWithoutMetadata(fs: FileSystem, timestamp: Long = Long.MaxValue):
       Option[Path] = {
-    val allFiles = fs.listStatus(progressDirectoryPath)
+    val allFiles = fs.listStatus(progressDirPath)
     if (allFiles.length < 1) {
       None
     } else {
@@ -84,7 +92,7 @@ private[spark] abstract class ProgressTrackerBase[T <: EventHubsConnector](
     val latestMetadata = metadataFiles.sortWith((f1, f2) => f1.getPath.getName.toLong >
       f2.getPath.getName.toLong).head
     logInfo(s"locate latest timestamp in metadata as ${latestMetadata.getPath.getName}")
-    Some(new Path(progressDirectoryStr + "/progress-" + latestMetadata.getPath.getName))
+    Some(new Path(progressDirStr + "/progress-" + latestMetadata.getPath.getName))
   }
 
   /**
@@ -95,8 +103,8 @@ private[spark] abstract class ProgressTrackerBase[T <: EventHubsConnector](
   private[spark] def getLatestFile(fs: FileSystem, timestamp: Long = Long.MaxValue):
     (Int, Option[Path]) = {
     // first check metadata directory if exists
-    if (fs.exists(metadataDirectoryPath)) {
-      val metadataFiles = fs.listStatus(metadataDirectoryPath).filter(
+    if (fs.exists(progressMetadataDirPath)) {
+      val metadataFiles = fs.listStatus(progressMetadataDirPath).filter(
         file => file.isFile && file.getPath.getName.toLong <= timestamp)
       if (metadataFiles.nonEmpty) {
         // metadata files exists
@@ -199,8 +207,8 @@ private[spark] abstract class ProgressTrackerBase[T <: EventHubsConnector](
    */
   private[spark] def pinPointProgressFile(fs: FileSystem, timestamp: Long): Option[Path] = {
     try {
-      require(fs.isDirectory(progressDirectoryPath), s"$progressDirectoryPath is not a directory")
-      val targetFilePath = new Path(s"$progressDirectoryStr/progress-$timestamp")
+      require(fs.isDirectory(progressDirPath), s"$progressDirPath is not a directory")
+      val targetFilePath = new Path(s"$progressDirStr/progress-$timestamp")
       val targetFileExists = fs.exists(targetFilePath)
       if (targetFileExists) Some(targetFilePath) else None
     } catch {
@@ -223,7 +231,7 @@ private[spark] abstract class ProgressTrackerBase[T <: EventHubsConnector](
    * read the progress record for the specified progressEntityID and timestamp
    */
   def read(targetConnectorUID: String, timestamp: Long, fallBack: Boolean): OffsetRecord = {
-    val fs = progressDirectoryPath.getFileSystem(hadoopConfiguration)
+    val fs = progressDirPath.getFileSystem(hadoopConfiguration)
     var recordToReturn = Map[EventHubNameAndPartition, (Long, Long)]()
     var readTimestamp: Long = 0
     var progressFileOption: Option[Path] = null
@@ -273,8 +281,8 @@ private[spark] abstract class ProgressTrackerBase[T <: EventHubsConnector](
     var oos: FSDataOutputStream = null
     try {
       // write progress file
-      oos = fs.create(new Path(s"$progressDirectoryPath/${PathTools.makeProgressFileName(
-        commitTime)}"), true)
+      oos = fs.create(new Path(s"$progressDirStr/${PathTools.progressFileNamePattern(commitTime)}"),
+        true)
       offsetToCommit.foreach {
         case (namespace, ehNameAndPartitionToOffsetAndSeq) =>
           ehNameAndPartitionToOffsetAndSeq.foreach {
@@ -301,8 +309,8 @@ private[spark] abstract class ProgressTrackerBase[T <: EventHubsConnector](
   private def createMetadata(fs: FileSystem, commitTime: Long): Boolean = {
     var oos: FSDataOutputStream = null
     try {
-      oos = fs.create(new Path(s"$metadataDirectoryStr/" + s"${PathTools.makeMetadataFileName(
-        commitTime)}"), true)
+      oos = fs.create(new Path(s"$progressMetadataDirStr/" +
+        s"${PathTools.progressMetadataNamePattern(commitTime)}"), true)
       true
     } catch {
       case e: Exception =>
@@ -355,12 +363,13 @@ private[spark] abstract class ProgressTrackerBase[T <: EventHubsConnector](
   private def allProgressRecords(
       timestamp: Long,
       ehConnectors: List[EventHubsConnector]): List[Path] = {
-    val fs = tempDirectoryPath.getFileSystem(hadoopConfiguration)
+    val fs = progressTempDirectoryPath.getFileSystem(hadoopConfiguration)
     ehConnectors.flatMap { ehConnector =>
       ehConnector.connectedInstances.map(ehNameAndPartition =>
-        PathTools.makeTempFilePath(
-          tempDirectoryStr, ehConnector.streamId, ehConnector.uid, ehNameAndPartition, timestamp))
-    }.filter(fs.exists)
+        new Path(progressTempDirStr +
+          s"/${PathTools.progressTempFileNamePattern(ehConnector.streamId, ehConnector.uid,
+            ehNameAndPartition, timestamp)}"))
+    }.filter(fs.exists _)
   }
 
   /**
@@ -374,7 +383,7 @@ private[spark] abstract class ProgressTrackerBase[T <: EventHubsConnector](
     val records = new ListBuffer[ProgressRecord]
     val ret = new mutable.HashMap[String, Map[EventHubNameAndPartition, (Long, Long)]]
     try {
-      val fs = tempDirectoryPath.getFileSystem(hadoopConfiguration)
+      val fs = progressTempDirPath.getFileSystem(hadoopConfiguration)
       val files = allProgressRecords(timestamp, ehConnectors).iterator
       while (files.hasNext) {
         val file = files.next()
@@ -409,8 +418,8 @@ private[spark] abstract class ProgressTrackerBase[T <: EventHubsConnector](
   }
 
   def cleanProgressFile(timestampToClean: Long): Unit = {
-    val fs = progressDirectoryPath.getFileSystem(hadoopConfiguration)
-    val allUselessFiles = fs.listStatus(progressDirectoryPath, new PathFilter {
+    val fs = progressDirPath.getFileSystem(hadoopConfiguration)
+    val allUselessFiles = fs.listStatus(progressDirPath, new PathFilter {
       override def accept(path: Path): Boolean = fromPathToTimestamp(path) <= timestampToClean
     }).map(_.getPath)
     val sortedFileList = allUselessFiles.sortWith((p1, p2) => fromPathToTimestamp(p1) >
@@ -422,7 +431,7 @@ private[spark] abstract class ProgressTrackerBase[T <: EventHubsConnector](
       }
     }
     // clean temp directory
-    val allUselessTempFiles = fs.listStatus(tempDirectoryPath, new PathFilter {
+    val allUselessTempFiles = fs.listStatus(progressTempDirPath, new PathFilter {
       override def accept(path: Path): Boolean = fromPathToTimestamp(path) <= timestampToClean
     }).map(_.getPath)
     if (allUselessTempFiles.nonEmpty) {
@@ -436,9 +445,9 @@ private[spark] abstract class ProgressTrackerBase[T <: EventHubsConnector](
 
   private def scheduleMetadataCleanTask(): ScheduledFuture[_] = {
     val metadataCleanTask = new Runnable {
-      override def run(): Unit = {
-        val fs = metadataDirectoryPath.getFileSystem(new Configuration())
-        val allMetadataFiles = fs.listStatus(metadataDirectoryPath)
+      override def run() = {
+        val fs = progressMetadataDirectoryPath.getFileSystem(new Configuration())
+        val allMetadataFiles = fs.listStatus(progressMetadataDirPath)
         val sortedMetadataFiles = allMetadataFiles.sortWith((f1, f2) => f1.getPath.getName.toLong <
           f2.getPath.getName.toLong)
         sortedMetadataFiles.take(math.max(sortedMetadataFiles.length - 1, 0)).map{

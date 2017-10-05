@@ -76,7 +76,7 @@ class ProgressTrackingListenerSuite extends SharedUtils {
     // build temp directories
     val progressWriter = new ProgressWriter(streamId, eventhubNamespace,
       EventHubNameAndPartition("eh1", 1), 1000L,
-      new Configuration(), progressTracker.tempDirectoryPath.toString,
+      new Configuration(), progressTracker.progressTempDirectoryPath.toString,
       appName)
     progressWriter.write(1000L, 0L, 0L)
     assert(fs.exists(progressWriter.tempProgressTrackingPointPath))

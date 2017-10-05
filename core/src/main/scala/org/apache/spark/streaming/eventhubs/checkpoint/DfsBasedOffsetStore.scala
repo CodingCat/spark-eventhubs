@@ -19,8 +19,9 @@ package org.apache.spark.streaming.eventhubs.checkpoint
 import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.fs.{FileSystem, Path}
 
-import org.apache.spark.SparkContext
 import org.apache.spark.internal.Logging
+import org.apache.spark.SparkContext
+
 
 /**
  * A DFS based OffsetStore implementation
